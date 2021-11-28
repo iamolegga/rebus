@@ -1,2 +1,239 @@
 # rebus
-Type-safe bus generator for go
+Type-safe bus generator for go (which you dream of).
+
+---
+
+There is a variety of `interface {}`-based buses in go.
+The problem is that these libraries ships some universal interface that receives and returns structs of unknown type and users of such libraries should add extra type assertions for both inputs and outputs.
+
+`Rebus` is here to change the paradigm: instead of using such a universal bus, you can generate your own (even multiple buses, for example when you prefer CQS you can generate separate query-bus and command-bus) with proper input's/output's types and command/query handlers interfaces.
+Everything you need is just to define input/output `struct`s, and all the boilerplate code will be generated.
+
+Sounds cool, right? Let's see it in action!
+
+## Install
+
+As `rebus` is a developer tool, and it's not runtime dependency it can be installed like so:   
+
+```shell
+printf '// +build tools\npackage tools\nimport _ "github.com/iamolegga/rebus"' | gofmt > tools.go
+go mod tidy
+```
+
+This technique keeps it as a dependency even if it's not imported anywhere in your code.
+
+## Example
+
+Here the several core parts are presented, but the full example can be found in [separate repo](https://github.com/iamolegga/rebusexample).
+
+Let's assume there is a new project, and it's started with some controller:
+
+```go
+package router
+
+import (
+	"net/http"
+
+	"github.com/gorilla/mux"
+)
+
+func New() http.Handler {
+	r := mux.NewRouter()
+
+	r.HandleFunc("/todos", func (w http.ResponseWriter, r *http.Request) {
+		panic("implement me")
+	}).Methods(http.MethodGet)
+
+	r.HandleFunc("/todos/{id}", func (w http.ResponseWriter, r *http.Request) {
+		panic("implement me")
+	}).Methods(http.MethodPut)
+
+	r.HandleFunc("/todos/{id}", func (w http.ResponseWriter, r *http.Request) {
+		panic("implement me")
+	}).Methods(http.MethodDelete)
+	
+	return r
+}
+```
+Here it's already known which routes are required for the app.
+In each route handler, incoming HTTP request could be parsed, validated, and sent as a command via bus to the application layer.
+So the commands' and queries' structs can be created:
+
+```go
+package app
+
+import "github.com/my-org/my-proj/internal/domain"
+
+//GetAllTodosQuery .
+// +rebus:out=../bus
+type GetAllTodosQuery struct {}
+
+type GetAllTodosQueryResult struct {
+    Todos []domain.Todo	
+}
+
+//UpdateTodoCommand .
+// +rebus:out=../bus
+type UpdateTodoCommand struct {
+    domain.Todo
+}
+
+type UpdateTodoCommandResult struct {
+    *domain.Todo
+}
+
+//DeleteTodoCommand .
+// +rebus:out=../bus
+type DeleteTodoCommand struct {
+    ID string
+}
+```
+
+In the code above there are _marker comments_ that are used to mark any struct as a bus command/query.
+Only commands/queries should have marker comments, result structs should have the same name as a command/query with `Result` suffix, and will be marked automatically. Also, a result struct is optional, a command can be without result.
+
+The signature of markers is next: `+rebus:out=./relative-path-from/current-file's-dir/to/dir-with-generated-code`
+
+_Marker comments are used for code generation in such projects as [kubernetes operators](https://sdk.operatorframework.io/docs/building-operators/golang/references/markers/) and [swaggo/swag](https://github.com/swaggo/swag#declarative-comments-format), here k8s style of marker comments is used._
+
+Now bus can be generated with the command:
+
+```shell
+go run github.com/iamolegga/rebus .
+```
+
+And finally, generated code can be used for controller:
+
+```go
+package router
+
+import (
+	"log"
+	"net/http"
+
+	"github.com/my-org/my-proj/internal/app"
+	"github.com/my-org/my-proj/internal/bus"
+)
+
+//New should be changed a bit:
+//add a Bus interface from a generated package
+//as an argument for the controller constructor,
+//so it can be used now
+func New(b bus.Bus) http.Handler {
+	// ...
+
+	r.HandleFunc("/todos", func(w http.ResponseWriter, r *http.Request) {
+		result, err := b.ExecGetAllTodosQuery(app.GetAllTodosQuery{})
+		if err != nil {
+			// ...	
+		}
+		log.Println(result.Todos)
+		// ...	
+	}).Methods(http.MethodGet)
+
+	// ...
+
+	return r
+}
+```
+
+`Bus` interface contains `Exec<MyCommandName>` method for each command/query with proper result type. It always returns` error` as the last (or single) result.
+If a more granular interface for each separate command is required `bus.<MyCommandName>Executor` interface can be used instead of `bus.Bus`.
+
+OK, so the bus can be used to call commands. But how does it handle commands?
+
+For each command there should be a separate handler, that implements generated `bus.<MyCommandName>Handler`:
+
+```go
+package app
+
+//MyGetAllTodosQueryHandlerImpl (can be any name that is preferred) is a struct
+//that implements generated bus.GetAllTodosQueryHandler,
+//so empty... (continue in next comment)
+type MyGetAllTodosQueryHandlerImpl struct{}
+
+//Handle method can be generated by your IDE
+//(for example in GoLand: right click on the struct -> generate -> implement methods ->
+//start typing: <MyCommand...> -> choose bus.<MyCommandName>Handler)
+func (h *MyGetAllTodosQueryHandlerImpl) Handle(query GetAllTodosQuery) (GetAllTodosQueryResult, error) {
+	// Now the only thing left to do is to implement it.
+	// Write business logic not boilerplate!
+}
+```
+
+The last thing that is left is registering this handler with the `Register<MyCommandName>Handler` method:
+
+```go
+package main
+
+func main() {
+	// ...
+	b := bus.New()
+	b.RegisterGetAllTodosQueryHandler(&app.MyGetAllTodosQueryHandlerImpl{})
+	handler := router.New(b)
+	// ...
+}
+```
+
+To make separate buses just set different values for `+rebus:out=` comment.
+Also, the optional `+rebus:pkg=<custom-name-for-generated-package>` comment can be used to change the name of the generated package from a directory name.
+
+## API
+
+To mark a struct as a command/query add a comment line above it:
+```go
+// +rebus:out=./path-to-directory
+```
+
+If command/query has a result it should be placed in the same package and named the same as the command/query with the `Result`-Suffix.
+
+To change the name of the generated package add a comment line above each command struct that should be handled by this package:
+```go
+// +rebus:pkg=mybuspkg
+```
+
+To run code generation:
+```shell
+go run github.com/iamolegga/rebus directory/that-will-be-checked-recuresively/for-rebus-tags
+```
+
+Generated package will have next exported types:
+
+```go
+package bus
+
+//All such executors will be combined to `Bus` interface,
+//so it can be called without name collisions
+//from the single interface
+type <MyCommand>Executor interface {
+	//if <MyCommand>Result exists in the same package:
+	Exec<MyCommand>(<MyCommand>) (<MyCommand>Result, error)
+	//if not:
+	Exec<MyCommand>(<MyCommand>) error
+}
+
+//All such handlers are useful to force splitting of command/query handlers
+//to separate structs (because each handler should have the same
+//`Handle`-method, but with different argument types). Also, it can be used
+//in IDE for quick code generation of handler implementation.
+type <MyCommand>Handler interface {
+	//if <MyCommand>Result exists in the same package:
+	Handle(<MyCommand>) (<MyCommand>Result, error)
+	//if not:
+	Handle(<MyCommand>) error
+}
+
+//Bus is used for two things:
+//- as a command/query executor
+//- to register handlers' implementations
+type Bus interface {
+	<MyCommand>Executor
+	Register<MyCommand>Handler(<MyCommand>Handler)
+}
+```
+
+## Todo
+
+- Add godoc
+- Add tests on code generation
+- Change generation command from `go run ...` to `go generate`. But that requires adding extra complexity because each file, in that case, will be handled separately and code generation will be one-by-on without the possibility to accumulate cache and do generation in the end. Instead, generation should make incremental updates of generated code by parsing existing generated code from the previous step.
