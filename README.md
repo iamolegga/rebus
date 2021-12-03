@@ -16,7 +16,7 @@ Sounds cool, right? Let's see it in action!
 As `rebus` is a developer tool, and it's not runtime dependency it can be installed like so:   
 
 ```shell
-printf '// +build tools\npackage tools\nimport _ "github.com/iamolegga/rebus"' | gofmt > tools.go
+printf '// +build tools\n\npackage tools\nimport _ "github.com/iamolegga/rebus"' | gofmt > tools.go
 go mod tidy
 ```
 
