@@ -8,12 +8,19 @@ import (
 	"github.com/iamolegga/rebus/internal/parser"
 )
 
-//Execute is an entrypoint for generating code by this package.
-//root is the folder to search recursively for rebus comment tags
-func Execute(root string) error {
-	gen := generator.New()
+// Opts is a struct to pass options to Execute function.
+type Opts struct {
+	//Root is a folder to search recursively for rebus comment tags.
+	Root string
+	//WithContext is a flag to add context.Context to function signatures.
+	WithContext bool
+}
 
-	if err := filepath.Walk(root, func(p string, f fs.FileInfo, err error) error {
+// Execute is an entrypoint for generating code by this package.
+func Execute(opts Opts) error {
+	gen := generator.New(opts.WithContext)
+
+	if err := filepath.Walk(opts.Root, func(p string, f fs.FileInfo, err error) error {
 		if f.IsDir() {
 			return parser.NewParser(p, gen).Parse()
 		}

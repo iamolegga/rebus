@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"slices"
 	"text/template"
 )
 
@@ -14,11 +15,12 @@ var t = template.Must(template.New("bus").Parse(tmpl))
 
 const GeneratedCodeFileName = "generated.go"
 
-func New() *Generator {
-	return &Generator{make(map[string]*File)}
+func New(ctx bool) *Generator {
+	return &Generator{ctx, make(map[string]*File)}
 }
 
 type Generator struct {
+	ctx  bool
 	data map[string]*File
 }
 
@@ -44,21 +46,22 @@ func (g *Generator) Generate() error {
 }
 
 func (g *Generator) Add(filePath, pkg, imp string, handler *Handler) {
-	existing, ok := g.data[filePath]
-	if ok {
+	if existing, ok := g.data[filePath]; ok {
 		existing.Handlers = append(existing.Handlers, handler)
-		for _, v := range existing.Imports {
-			if v == imp {
-				return
-			}
+		if !slices.Contains(existing.Imports, imp) {
+			existing.Imports = append(existing.Imports, imp)
 		}
-		existing.Imports = append(existing.Imports, imp)
-		g.data[filePath] = existing
 	} else {
 		g.data[filePath] = &File{
 			Package:  pkg,
 			Imports:  []string{imp},
 			Handlers: []*Handler{handler},
+		}
+	}
+	if g.ctx {
+		handler.Ctx = true
+		if !slices.Contains(g.data[filePath].Imports, "context") {
+			g.data[filePath].Imports = append([]string{"context"}, g.data[filePath].Imports...)
 		}
 	}
 }
@@ -73,6 +76,7 @@ type Handler struct {
 	Package string
 	Input   string
 	Output  string
+	Ctx     bool
 }
 
 type GenData = map[string]File
